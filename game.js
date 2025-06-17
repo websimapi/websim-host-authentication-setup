@@ -7,7 +7,7 @@ import {
     clearStoredKeys
 } from './auth.js';
 
-// --- Hardcoded Host Public Key ---
+// The designated host's public key.
 const HOST_PUBLIC_KEY_JWK = {
   "alg": "PS256",
   "e": "AQAB",
@@ -16,15 +16,13 @@ const HOST_PUBLIC_KEY_JWK = {
     "verify"
   ],
   "kty": "RSA",
-  "n": "svKIby5x7ffPEkjkw0BKLaPD7ODkFblSB9JbEB_vfZI_EcHO4gIU5dpniJ7HDrG2BUVjrpGY0NL-jFhojoc0gE-KZIGbGGroft8SluTSCzgCXFBrvgh8R7X165lNC24x6Auhjepi55TjASWguw4HJv65ndKiPL3Js3YN1LIQ-v01Dm6QtG2bDvO59sBdm5RbmSRLEmwadOPZjNYE5W6DpFTfyOL4xCi-cD9kZQjY6hArJFmPDWRmhbiDseiacZ_8DdhZ4BAAWz-hTWgl9rQl7vwuf7ONFj3-uTsLs6gYCmJL15hhQCsQ28rpRUcycezbEsxfwsdJ72RVFnWruUyiHQ"
+  "n": "v-Ha4MxtKjVSkBtwPZ9CFyalZGtgEj88VFPSGPsm7ezOLvgMVL0pswTXMzrjZ87j3dF3NSaXb6b1ch0r8ixfPOCq4QcKXAcJq3rFvyBlLBZl3LXhkf9YYaQolm88bTVfCQi9LdqPHBWMHH3-vykzZb3dERSUdxiJXV5kk5GRJQ3bf48CwZDba4jAhr5_40uBsefabWAO32t8jlxBl-aCzetaXdGYeSRn0kXY7b5b4QhYougNN99FbO1ZGWOJfFXy4SOhcPA0hkn0L5mvS5IgmEzdx75FzuS-Q9qDl4YN1ArU7lacfDh0wXNVD1KhxVHwV_LxQwecHg_ee57tiXHPjQ"
 };
-
-// --- Multiplayer Setup ---
-const room = new WebsimSocket();
 
 // --- Global state ---
 let hostState = {
     isLoggedIn: false,
+    isMainHost: false,
     publicKey: null,
     privateKey: null,
 };
@@ -48,9 +46,8 @@ const DOMElements = {
     copyPublicKeyBtn: document.getElementById('copy-public-key-btn'),
     privateKeyInfo: document.getElementById('private-key-info'),
     logoutBtn: document.getElementById('logout-btn'),
-    
     playerPanel: document.getElementById('player-panel'),
-    playerStatusText: document.getElementById('player-status-text'),
+    playerLogoutBtn: document.getElementById('player-logout-btn'),
 };
 
 // --- UI Logic ---
@@ -75,18 +72,11 @@ function showNotification(message, type = 'success', duration = 3000) {
  */
 function updateAuthViewState() {
     if (keysExist()) {
-        // This browser belongs to the host
         DOMElements.pinSetupPanel.style.display = 'none';
         DOMElements.pinLoginPanel.style.display = 'block';
-        DOMElements.playerPanel.style.display = 'none';
-        DOMElements.authPanel.style.display = 'block';
     } else {
-        // This browser belongs to a player
-        DOMElements.pinSetupPanel.style.display = 'none';
+        DOMElements.pinSetupPanel.style.display = 'block';
         DOMElements.pinLoginPanel.style.display = 'none';
-        DOMElements.authPanel.style.display = 'none';
-        DOMElements.hostPanel.style.display = 'none';
-        DOMElements.playerPanel.style.display = 'block';
     }
 }
 
@@ -96,42 +86,21 @@ function updateAuthViewState() {
 function updateHostStateView() {
     if (hostState.isLoggedIn) {
         DOMElements.authPanel.style.display = 'none';
-        DOMElements.hostPanel.style.display = 'block';
-        const publicKeyJwk = getStoredPublicKey();
-        DOMElements.publicKeyDisplay.textContent = JSON.stringify(publicKeyJwk, null, 2);
+        if (hostState.isMainHost) {
+            DOMElements.hostPanel.style.display = 'block';
+            DOMElements.playerPanel.style.display = 'none';
+            const publicKeyJwk = getStoredPublicKey();
+            DOMElements.publicKeyDisplay.textContent = JSON.stringify(publicKeyJwk, null, 2);
+        } else {
+            DOMElements.hostPanel.style.display = 'none';
+            DOMElements.playerPanel.style.display = 'block';
+        }
     } else {
         DOMElements.authPanel.style.display = 'block';
         DOMElements.hostPanel.style.display = 'none';
+        DOMElements.playerPanel.style.display = 'none';
         updateAuthViewState();
     }
-}
-
-// --- Multiplayer Logic ---
-
-function handlePresenceUpdate(presence) {
-    const hostId = findHost(presence);
-    if (hostId) {
-        if (keysExist()) { // This is the host client
-             // Host is connected and verified, normal game operation can proceed.
-        } else { // This is a player client
-            DOMElements.playerStatusText.textContent = `Host '${room.peers[hostId].username}' is connected. The game can begin!`;
-            DOMElements.playerStatusText.style.color = '#28a745'; // Green color for success
-        }
-    } else {
-        if (!keysExist()) { // Player client
-            DOMElements.playerStatusText.textContent = 'Waiting for the host to connect...';
-            DOMElements.playerStatusText.style.color = '#ccc';
-        }
-    }
-}
-
-function findHost(presence) {
-    for (const clientId in presence) {
-        if (presence[clientId].isHost) {
-            return clientId;
-        }
-    }
-    return null;
 }
 
 // --- Event Handlers ---
@@ -154,13 +123,25 @@ async function handleGenerateKeys() {
         showNotification('Host keys generated and stored securely!', 'success');
         DOMElements.pinInput.value = '';
         DOMElements.confirmPinInput.value = '';
-        // After generating keys, a "login" is required.
-        // We will just update the view to show the login panel.
         updateAuthViewState();
     } catch (error) {
         console.error('Key generation failed:', error);
         showNotification('Error generating keys. See console for details.', 'error');
     }
+}
+
+/**
+ * Checks if a user's public key matches the designated host's public key.
+ * A simple but effective way to compare JWK objects is by their modulus (`n`).
+ * @param {object} userPublicKeyJwk - The user's public key in JWK format.
+ * @returns {boolean}
+ */
+function isUserTheHost(userPublicKeyJwk) {
+    if (!userPublicKeyJwk || !HOST_PUBLIC_KEY_JWK) {
+        return false;
+    }
+    // Comparing the 'n' (modulus) component is a reliable way to check if it's the same RSA public key.
+    return userPublicKeyJwk.n === HOST_PUBLIC_KEY_JWK.n;
 }
 
 async function handleLogin() {
@@ -171,31 +152,20 @@ async function handleLogin() {
     }
 
     const encryptedKey = getStoredEncryptedPrivateKey();
+    const userPublicKeyJwk = getStoredPublicKey();
     try {
         const privateKey = await decryptPrivateKey(encryptedKey, pin);
-
-        // Verify the decrypted key matches the hardcoded public key
-        const decryptedPublicKey = await crypto.subtle.exportKey('jwk', 
-            (await crypto.subtle.importKey('pkcs8', await crypto.subtle.exportKey('pkcs8', privateKey), KEY_ALGORITHM, true, ['sign'])).publicKey
-        );
-        
-        // Simple comparison of the 'n' parameter of the JWK
-        if (decryptedPublicKey.n !== HOST_PUBLIC_KEY_JWK.n) {
-             showNotification('Keys in storage do not match the official host key.', 'error');
-             return;
-        }
-
         hostState.isLoggedIn = true;
         hostState.privateKey = privateKey;
-        hostState.publicKey = await crypto.subtle.importKey('jwk', getStoredPublicKey(), { name: 'RSA-PSS', hash: 'SHA-256' }, true, ['verify']);
+        hostState.publicKey = await crypto.subtle.importKey('jwk', userPublicKeyJwk, { name: 'RSA-PSS', hash: 'SHA-256' }, true, ['verify']);
         
-        showNotification('Login successful! Welcome, Host.', 'success');
+        // Check if the logged-in user is the designated host
+        hostState.isMainHost = isUserTheHost(userPublicKeyJwk);
+
+        const welcomeMessage = hostState.isMainHost ? 'Login successful! Welcome, Host.' : 'Login successful! Welcome, Player.';
+        showNotification(welcomeMessage, 'success');
         DOMElements.loginPinInput.value = '';
         updateHostStateView();
-
-        // Announce to the room that this client is the host
-        room.updatePresence({ isHost: true });
-
     } catch (error) {
         console.error('Login failed:', error);
         showNotification('Incorrect PIN or corrupted keys.', 'error');
@@ -203,9 +173,7 @@ async function handleLogin() {
 }
 
 function handleLogout() {
-    hostState = { isLoggedIn: false, publicKey: null, privateKey: null };
-    // Announce departure as host
-    room.updatePresence({ isHost: null });
+    hostState = { isLoggedIn: false, isMainHost: false, publicKey: null, privateKey: null };
     showNotification('You have been logged out.', 'success');
     updateHostStateView();
 }
@@ -230,34 +198,15 @@ function handleShowGeneratePanel(e) {
 
 // --- Initialization ---
 
-async function initialize() {
+function initialize() {
     DOMElements.generateKeysBtn.addEventListener('click', handleGenerateKeys);
     DOMElements.loginBtn.addEventListener('click', handleLogin);
     DOMElements.logoutBtn.addEventListener('click', handleLogout);
+    DOMElements.playerLogoutBtn.addEventListener('click', handleLogout); // Also hook up logout for player panel
     DOMElements.copyPublicKeyBtn.addEventListener('click', handleCopyPublicKey);
     DOMElements.showGenerateLink.addEventListener('click', handleShowGeneratePanel);
     
-    // Initial UI state based on whether keys are in localStorage
     updateHostStateView();
-    
-    // Initialize multiplayer connection
-    try {
-        await room.initialize();
-        console.log('Connected to room. Client ID:', room.clientId);
-        
-        // Set initial presence. If host keys exist, we are potentially the host.
-        // The `isHost` flag will be set to true upon successful login.
-        room.updatePresence({ isHost: false });
-
-        room.subscribePresence(handlePresenceUpdate);
-        
-        // Initial check
-        handlePresenceUpdate(room.presence);
-
-    } catch (error) {
-        console.error("Failed to initialize multiplayer connection:", error);
-        showNotification("Could not connect to the server.", "error", 5000);
-    }
 }
 
 // Start the application

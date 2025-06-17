@@ -78,7 +78,7 @@ export function keysExist() {
  * @returns {Promise<{publicKey: CryptoKey, privateKey: CryptoKey}>} The generated key pair.
  */
 async function generateRsaKeys() {
-    return await crypto.subtle.generateKey(KEY_ALGORITHM, true, ['sign']);
+    return await crypto.subtle.generateKey(KEY_ALGORITHM, true, ['sign', 'verify']);
 }
 
 /**
@@ -151,6 +151,7 @@ export async function generateAndStoreKeys(pin) {
     localStorage.setItem(PRIVATE_KEY_STORE, encryptedPrivateKeyJson);
 }
 
+
 /**
  * Retrieves the stored public key JWK.
  * @returns {object|null} The public key as a JWK object, or null if not found.
@@ -175,3 +176,4 @@ export function clearStoredKeys() {
     localStorage.removeItem(PUBLIC_KEY_STORE);
     localStorage.removeItem(PRIVATE_KEY_STORE);
 }
+
