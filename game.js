@@ -27,6 +27,7 @@ const room = new WebsimSocket();
 let scene, camera, renderer, cube;
 let animationFrameId;
 const sceneObjects = {}; // To map game state objects to three.js objects
+let terrainMesh; // Reference to the terrain for raycasting
 let controls; // To be defined if OrbitControls are used
 
 // --- Global state ---
@@ -36,6 +37,7 @@ let hostState = {
     publicKey: null,
     privateKey: null,
     gameActive: false,
+    hostClientId: null,
 };
 
 // --- UI Elements ---
@@ -145,6 +147,7 @@ function updateHostStateView() {
         DOMElements.hostPanel.style.display = 'none';
         DOMElements.playerPanel.style.display = 'none';
         hostState.gameActive = false;
+        hostState.hostClientId = null;
         updateAuthViewState();
         teardownGameWorld();
     }
@@ -311,6 +314,7 @@ function initializeGameWorld() {
     const terrain = new THREE.Mesh(terrainGeometry, terrainMaterial);
     terrain.rotation.x = -Math.PI / 2;
     scene.add(terrain);
+    terrainMesh = terrain;
     
     window.addEventListener('resize', onWindowResize);
     animate();
@@ -321,6 +325,12 @@ function teardownGameWorld() {
     console.log("Host left. Tearing down game world.");
     
     cancelAnimationFrame(animationFrameId);
+
+    // Remove event listener
+    if (renderer) {
+        renderer.domElement.removeEventListener('click', onCanvasClick);
+    }
+    
     if (renderer) {
         DOMElements.gameWorldPanel.removeChild(renderer.domElement);
         renderer.dispose();
@@ -337,6 +347,7 @@ function teardownGameWorld() {
     }
     
     hostState.gameActive = false;
+    hostState.hostClientId = null;
     updateHostStateView();
 }
 
@@ -364,12 +375,42 @@ function animate() {
             const data = gamePlayers[playerId];
             const obj = sceneObjects[playerId];
             if (obj && data) {
-                obj.position.set(data.x, 0, data.z);
+                 // Simple interpolation for smooth movement
+                const targetPosition = new THREE.Vector3(data.x, 0, data.z);
+                obj.position.lerp(targetPosition, 0.1);
             }
         }
     }
 
     if(renderer) renderer.render(scene, camera);
+}
+
+
+function onCanvasClick(event) {
+    if (!hostState.gameActive || !hostState.hostClientId) return;
+
+    const mouse = new THREE.Vector2();
+    mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+    mouse.y = - (event.clientY / window.innerHeight) * 2 + 1;
+
+    const raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera(mouse, camera);
+
+    const intersects = raycaster.intersectObject(terrainMesh);
+
+    if (intersects.length > 0) {
+        const point = intersects[0].point;
+        console.log(`Clicked at world coordinates: (${point.x}, ${point.z})`);
+
+        // Send movement request to the host
+        room.requestPresenceUpdate(hostState.hostClientId, {
+            type: 'moveRequest',
+            destination: {
+                x: point.x,
+                z: point.z,
+            },
+        });
+    }
 }
 
 
@@ -399,108 +440,147 @@ async function connectToRoom() {
 
     room.subscribePresence(handlePresenceUpdate);
     room.subscribeRoomState(handleRoomStateUpdate);
+    room.subscribePresenceUpdateRequests(handlePresenceUpdateRequests);
 }
 
 function handlePresenceUpdate() {
-    let hostFound = false;
-    let hostUsername = 'N/A';
-    const playerUsernames = [];
+    try {
+        let hostFound = false;
+        let hostUsername = 'N/A';
+        let foundHostId = null;
+        const playerUsernames = [];
 
-    const currentPlayers = room.roomState.players || {};
-    
-    for (const clientId in room.presence) {
-        const peer = room.peers[clientId];
-        const presence = room.presence[clientId];
+        const currentPlayers = room.roomState.players || {};
+        
+        for (const clientId in room.presence) {
+            const peer = room.peers[clientId];
+            const presence = room.presence[clientId];
 
-        if (presence?.isHost) {
-            hostFound = true;
-            hostUsername = peer?.username || 'Host';
-        }
-        if (peer && presence?.loggedIn) {
-             playerUsernames.push(peer.username);
-        }
+            if (presence?.isHost) {
+                hostFound = true;
+                hostUsername = peer?.username || 'Host';
+                foundHostId = clientId;
+            }
+            if (peer && presence?.loggedIn) {
+                 playerUsernames.push(peer.username);
+            }
 
-        // Host logic: check if player needs to be added to room state
-        if (hostState.isMainHost && presence?.loggedIn && !currentPlayers[clientId]) {
-            console.log(`Host: adding player ${clientId} to the game.`);
-            room.updateRoomState({
-                players: {
-                    [clientId]: {
-                        x: presence.x,
-                        z: presence.z,
+            // Host logic: check if player needs to be added to room state
+            if (hostState.isMainHost && presence?.loggedIn && !currentPlayers[clientId]) {
+                console.log(`Host: adding player ${clientId} to the game.`);
+                room.updateRoomState({
+                    players: {
+                        [clientId]: {
+                            x: presence.x,
+                            z: presence.z,
+                        }
                     }
-                }
-            });
-        }
-    }
-
-    // Host logic: check for disconnected players
-    if (hostState.isMainHost) {
-        const newPlayerState = { ...currentPlayers };
-        let changed = false;
-        for(const playerId in newPlayerState) {
-            if (!room.presence[playerId] || !room.presence[playerId].loggedIn) {
-                console.log(`Host: removing player ${playerId} from the game.`);
-                newPlayerState[playerId] = null; // Mark for deletion
-                changed = true;
+                });
             }
         }
-        if (changed) {
-            room.updateRoomState({ players: newPlayerState });
+
+        // Host logic: check for disconnected players
+        if (hostState.isMainHost) {
+            const newPlayerState = { ...currentPlayers };
+            let changed = false;
+            for(const playerId in newPlayerState) {
+                if (!room.presence[playerId] || !room.presence[playerId].loggedIn) {
+                    console.log(`Host: removing player ${playerId} from the game.`);
+                    newPlayerState[playerId] = null; // Mark for deletion
+                    changed = true;
+                }
+            }
+            if (changed) {
+                room.updateRoomState({ players: newPlayerState });
+            }
         }
-    }
 
+        hostState.hostClientId = foundHostId;
 
-    if (hostFound && !hostState.gameActive) {
-        initializeGameWorld();
-    } else if (!hostFound && hostState.gameActive) {
-        teardownGameWorld();
-    }
+        if (hostFound && !hostState.gameActive) {
+            initializeGameWorld();
+        } else if (!hostFound && hostState.gameActive) {
+            teardownGameWorld();
+        }
 
-    if(hostState.gameActive) {
-        DOMElements.hostStatus.textContent = `Host: ${hostUsername}`;
-        DOMElements.playerList.innerHTML = `Players: ${playerUsernames.join(', ')}`;
+        if(hostState.gameActive) {
+            DOMElements.hostStatus.textContent = `Host: ${hostUsername}`;
+            DOMElements.playerList.innerHTML = `Players: ${playerUsernames.join(', ')}`;
+        }
+    } catch(error) {
+        console.error("Error in handlePresenceUpdate:", error);
     }
 }
 
 function handleRoomStateUpdate(currentRoomState) {
-    if (!hostState.gameActive || !scene) return;
-    
-    const gamePlayers = currentRoomState.players || {};
+    try {
+        if (!hostState.gameActive || !scene) return;
+        
+        const gamePlayers = currentRoomState.players || {};
 
-    // Add new players / characters
-    for (const playerId in gamePlayers) {
-        if (!sceneObjects[playerId] && gamePlayers[playerId]) {
-            console.log(`Creating new character for: ${playerId}`);
-            const character = createStickCharacter();
-            
-            // Customize color based on client ID to differentiate players
-            const color = new THREE.Color().setHSL(parseInt(playerId.substring(0, 8), 36) / 1e12, 0.8, 0.7);
-            character.traverse((child) => {
-                 if (child.isMesh && child.geometry.type === 'CylinderGeometry') {
-                    child.material.color.set(color);
-                }
-            });
+        // Add new players / characters
+        for (const playerId in gamePlayers) {
+            if (!sceneObjects[playerId] && gamePlayers[playerId]) {
+                console.log(`Creating new character for: ${playerId}`);
+                const character = createStickCharacter();
+                
+                // Customize color based on client ID to differentiate players
+                const color = new THREE.Color().setHSL(parseInt(playerId.substring(0, 8), 36) / 1e12, 0.8, 0.7);
+                character.traverse((child) => {
+                     if (child.isMesh && child.geometry.type === 'CylinderGeometry') {
+                        child.material.color.set(color);
+                    }
+                });
+                
+                // Set initial position
+                const initialPos = gamePlayers[playerId];
+                character.position.set(initialPos.x, 0, initialPos.z);
 
-            sceneObjects[playerId] = character;
-            scene.add(character);
+                sceneObjects[playerId] = character;
+                scene.add(character);
+            }
         }
+
+        // Remove old players / characters
+         for (const playerId in sceneObjects) {
+            if (!gamePlayers[playerId]) {
+                console.log(`Removing character for: ${playerId}`);
+                const obj = sceneObjects[playerId];
+                scene.remove(obj);
+                obj.traverse(child => {
+                    if (child.isMesh) {
+                        child.geometry.dispose();
+                        child.material.dispose();
+                    }
+                });
+                delete sceneObjects[playerId];
+            }
+        }
+    } catch (error) {
+        console.error("Error in handleRoomStateUpdate:", error);
     }
+}
 
-    // Remove old players / characters
-     for (const playerId in sceneObjects) {
-        if (!gamePlayers[playerId]) {
-            console.log(`Removing character for: ${playerId}`);
-            const obj = sceneObjects[playerId];
-            scene.remove(obj);
-            obj.traverse(child => {
-                if (child.isMesh) {
-                    child.geometry.dispose();
-                    child.material.dispose();
-                }
-            });
-            delete sceneObjects[playerId];
+function handlePresenceUpdateRequests(updateRequest, fromClientId) {
+    if (!hostState.isMainHost) return; // Only host processes requests
+
+    try {
+        if (updateRequest.type === 'moveRequest') {
+            const playerToMove = room.roomState.players[fromClientId];
+            if (playerToMove) {
+                console.log(`Host: processing move request from ${fromClientId}`);
+                room.updateRoomState({
+                    players: {
+                        [fromClientId]: {
+                            x: updateRequest.destination.x,
+                            z: updateRequest.destination.z,
+                        }
+                    }
+                });
+            }
         }
+    } catch (error) {
+        console.error("Error processing presence update request:", error);
     }
 }
 
