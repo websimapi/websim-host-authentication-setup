@@ -1,3 +1,4 @@
+import * as THREE from 'three';
 import {
     keysExist,
     generateAndStoreKeys,
@@ -19,16 +20,27 @@ const HOST_PUBLIC_KEY_JWK = {
   "n": "v-Ha4MxtKjVSkBtwPZ9CFyalZGtgEj88VFPSGPsm7ezOLvgMVL0pswTXMzrjZ87j3dF3NSaXb6b1ch0r8ixfPOCq4QcKXAcJq3rFvyBlLBZl3LXhkf9YYaQolm88bTVfCQi9LdqPHBWMHH3-vykzZb3dERSUdxiJXV5kk5GRJQ3bf48CwZDba4jAhr5_40uBsefabWAO32t8jlxBl-aCzetaXdGYeSRn0kXY7b5b4QhYougNN99FbO1ZGWOJfFXy4SOhcPA0hkn0L5mvS5IgmEzdx75FzuS-Q9qDl4YN1ArU7lacfDh0wXNVD1KhxVHwV_LxQwecHg_ee57tiXHPjQ"
 };
 
+// --- Multiplayer ---
+const room = new WebsimSocket();
+
+// --- 3D Scene ---
+let scene, camera, renderer, cube;
+let animationFrameId;
+const sceneObjects = {}; // To map game state objects to three.js objects
+
 // --- Global state ---
 let hostState = {
     isLoggedIn: false,
     isMainHost: false,
     publicKey: null,
     privateKey: null,
+    gameActive: false,
 };
 
 // --- UI Elements ---
 const DOMElements = {
+    appContainer: document.getElementById('app-container'),
+    authContainer: document.getElementById('auth-container'),
     notificationBar: document.getElementById('notification-bar'),
     authPanel: document.getElementById('auth-panel'),
     pinSetupPanel: document.getElementById('pin-setup-panel'),
@@ -48,6 +60,8 @@ const DOMElements = {
     logoutBtn: document.getElementById('logout-btn'),
     playerPanel: document.getElementById('player-panel'),
     playerLogoutBtn: document.getElementById('player-logout-btn'),
+    gameWorldPanel: document.getElementById('game-world-panel'),
+    hostStatus: document.getElementById('host-status'),
 };
 
 // --- UI Logic ---
@@ -62,7 +76,10 @@ function showNotification(message, type = 'success', duration = 3000) {
     const { notificationBar } = DOMElements;
     notificationBar.textContent = message;
     notificationBar.className = `notification ${type}`;
+    // Make sure it's visible if it was hidden
+    notificationBar.style.display = 'block';
     setTimeout(() => {
+        // Hide it by changing class, not display property, to allow transitions
         notificationBar.className = 'notification';
     }, duration);
 }
@@ -99,7 +116,9 @@ function updateHostStateView() {
         DOMElements.authPanel.style.display = 'block';
         DOMElements.hostPanel.style.display = 'none';
         DOMElements.playerPanel.style.display = 'none';
+        hostState.gameActive = false;
         updateAuthViewState();
+        teardownGameWorld();
     }
 }
 
@@ -166,6 +185,7 @@ async function handleLogin() {
         showNotification(welcomeMessage, 'success');
         DOMElements.loginPinInput.value = '';
         updateHostStateView();
+        connectToRoom(); // Connect to multiplayer room after login
     } catch (error) {
         console.error('Login failed:', error);
         showNotification('Incorrect PIN or corrupted keys.', 'error');
@@ -176,6 +196,7 @@ function handleLogout() {
     hostState = { isLoggedIn: false, isMainHost: false, publicKey: null, privateKey: null };
     showNotification('You have been logged out.', 'success');
     updateHostStateView();
+    // No need to disconnect, WebsimSocket handles browser close/refresh
 }
 
 function handleCopyPublicKey() {
@@ -192,6 +213,189 @@ function handleShowGeneratePanel(e) {
     if(confirm("Are you sure? This will delete your existing keys if you proceed with generating new ones.")){
         clearStoredKeys();
         updateAuthViewState();
+    }
+}
+
+
+// --- 3D Scene Logic ---
+
+function initializeGameWorld() {
+    if (hostState.gameActive) return; // Already initialized
+    console.log("Host detected. Initializing game world...");
+    hostState.gameActive = true;
+
+    // Hide auth/lobby UI and show game world
+    DOMElements.authContainer.style.display = 'none';
+    DOMElements.gameWorldPanel.style.display = 'block';
+    DOMElements.appContainer.classList.add('in-game');
+
+
+    // Basic Three.js setup
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x1a1a1a);
+    
+    camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.z = 5;
+
+    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    DOMElements.gameWorldPanel.appendChild(renderer.domElement);
+
+    // Lighting
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+    scene.add(ambientLight);
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    directionalLight.position.set(5, 10, 7.5);
+    scene.add(directionalLight);
+
+    // Initial object creation will be handled by room state subscription
+    
+    window.addEventListener('resize', onWindowResize);
+    animate();
+}
+
+function teardownGameWorld() {
+    if (!hostState.gameActive) return;
+    console.log("Host left. Tearing down game world.");
+    
+    cancelAnimationFrame(animationFrameId);
+    if (renderer) {
+        DOMElements.gameWorldPanel.removeChild(renderer.domElement);
+        renderer.dispose();
+    }
+    
+    DOMElements.authContainer.style.display = 'block';
+    DOMElements.gameWorldPanel.style.display = 'none';
+    DOMElements.appContainer.classList.remove('in-game');
+
+    // Clear scene objects
+    for (const key in sceneObjects) {
+        delete sceneObjects[key];
+    }
+    
+    hostState.gameActive = false;
+    updateHostStateView();
+}
+
+
+function onWindowResize() {
+    if (!camera || !renderer) return;
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+function animate() {
+    animationFrameId = requestAnimationFrame(animate);
+
+    // Host-specific logic
+    if (hostState.isMainHost) {
+        // In a real game, host would calculate physics and update state here
+        const time = Date.now() * 0.001;
+        room.updateRoomState({
+            gameObjects: {
+                'box1': {
+                    x: Math.sin(time) * 2,
+                    y: Math.cos(time) * 2,
+                    z: 0
+                }
+            }
+        });
+    }
+
+    // All clients render based on roomState
+    if (room.roomState.gameObjects) {
+        const gameStateObjects = room.roomState.gameObjects;
+        for (const objectId in gameStateObjects) {
+            const data = gameStateObjects[objectId];
+            const obj = sceneObjects[objectId];
+            if (obj && data) {
+                obj.position.set(data.x, data.y, data.z);
+            }
+        }
+    }
+
+    if(renderer) renderer.render(scene, camera);
+}
+
+
+// --- Multiplayer Logic ---
+
+async function connectToRoom() {
+    await room.initialize();
+    
+    console.log("Connected to room. My client ID:", room.clientId);
+    
+    // Set initial presence. If host, announce it.
+    const initialPresence = {
+        isHost: hostState.isMainHost,
+        loggedIn: true,
+    };
+    room.updatePresence(initialPresence);
+
+    // Host initializes game state
+    if (hostState.isMainHost && !room.roomState.gameObjects) {
+        console.log("I am the host. Initializing room state.");
+        room.updateRoomState({
+            gameObjects: {
+                'box1': { x: 0, y: 0, z: 0 }
+            }
+        });
+    }
+
+    room.subscribePresence(handlePresenceUpdate);
+    room.subscribeRoomState(handleRoomStateUpdate);
+}
+
+function handlePresenceUpdate() {
+    let hostFound = false;
+    let hostUsername = 'N/A';
+    
+    for (const clientId in room.presence) {
+        if (room.presence[clientId]?.isHost) {
+            hostFound = true;
+            hostUsername = room.peers[clientId]?.username || 'Host';
+            break;
+        }
+    }
+
+    if (hostFound && !hostState.gameActive) {
+        initializeGameWorld();
+    } else if (!hostFound && hostState.gameActive) {
+        teardownGameWorld();
+    }
+
+    if(hostState.gameActive) {
+        DOMElements.hostStatus.textContent = `Host: ${hostUsername}`;
+    }
+}
+
+function handleRoomStateUpdate(currentRoomState) {
+    if (!hostState.gameActive || !scene) return;
+    
+    const gameStateObjects = currentRoomState.gameObjects || {};
+
+    // Add new objects
+    for (const objectId in gameStateObjects) {
+        if (!sceneObjects[objectId] && gameStateObjects[objectId]) {
+            console.log(`Creating new object: ${objectId}`);
+            const geometry = new THREE.BoxGeometry(1, 1, 1);
+            const material = new THREE.MeshStandardMaterial({ color: 0x00aaff });
+            const newCube = new THREE.Mesh(geometry, material);
+            sceneObjects[objectId] = newCube;
+            scene.add(newCube);
+        }
+    }
+
+    // Remove old objects
+     for (const objectId in sceneObjects) {
+        if (!gameStateObjects[objectId]) {
+            console.log(`Removing object: ${objectId}`);
+            scene.remove(sceneObjects[objectId]);
+            sceneObjects[objectId].geometry.dispose();
+            sceneObjects[objectId].material.dispose();
+            delete sceneObjects[objectId];
+        }
     }
 }
 

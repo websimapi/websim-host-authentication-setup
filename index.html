@@ -5,54 +5,72 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Host Authentication Setup</title>
     <link rel="stylesheet" href="styles.css">
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.165.0/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.165.0/examples/jsm/"
+        }
+    }
+    </script>
 </head>
 <body>
     <div id="app-container">
-        <h1>Host Authentication Setup</h1>
+        <div id="auth-container">
+            <h1>Host Authentication Setup</h1>
 
-        <!-- Notification Bar -->
-        <div id="notification-bar" class="notification"></div>
+            <!-- Notification Bar -->
+            <div id="notification-bar" class="notification"></div>
 
-        <!-- Authentication Panel -->
-        <div id="auth-panel">
-            <h2>Host Setup & Login</h2>
-            <div class="card" id="pin-setup-panel">
-                <h3>1. Generate Host Keys</h3>
-                <p>If you are the host and don't have keys yet, create them here. This only needs to be done once.</p>
-                <input type="password" id="pin-input" placeholder="Enter a 4-8 digit PIN">
-                <input type="password" id="confirm-pin-input" placeholder="Confirm PIN">
-                <button id="generate-keys-btn">Generate Host Keys</button>
+            <!-- Authentication Panel -->
+            <div id="auth-panel">
+                <h2>Host Setup & Login</h2>
+                <div class="card" id="pin-setup-panel">
+                    <h3>1. Generate Host Keys</h3>
+                    <p>If you are the host and don't have keys yet, create them here. This only needs to be done once.</p>
+                    <input type="password" id="pin-input" placeholder="Enter a 4-8 digit PIN">
+                    <input type="password" id="confirm-pin-input" placeholder="Confirm PIN">
+                    <button id="generate-keys-btn">Generate Host Keys</button>
+                </div>
+
+                <div class="card" id="pin-login-panel" style="display: none;">
+                    <h3>2. Login as Host</h3>
+                    <p>If you have already generated keys, enter your PIN to log in.</p>
+                    <input type="password" id="login-pin-input" placeholder="Enter your PIN">
+                    <button id="login-btn">Login as Host</button>
+                    <a href="#" id="show-generate-link">Need to generate new keys?</a>
+                </div>
             </div>
 
-            <div class="card" id="pin-login-panel" style="display: none;">
-                <h3>2. Login as Host</h3>
-                <p>If you have already generated keys, enter your PIN to log in.</p>
-                <input type="password" id="login-pin-input" placeholder="Enter your PIN">
-                <button id="login-btn">Login as Host</button>
-                <a href="#" id="show-generate-link">Need to generate new keys?</a>
+            <!-- Host Control Panel -->
+            <div id="host-panel" class="card" style="display: none;">
+                <h2>Host Control Panel</h2>
+                <p>You are logged in as the host. Your private key is loaded securely in memory.</p>
+                
+                <h3>Your Public Key</h3>
+                <p>Share this public key with the game developer. It will be embedded into the game client to verify you as the host.</p>
+                <pre id="public-key-display"></pre>
+                <button id="copy-public-key-btn">Copy Public Key</button>
+
+                <h3>Private Key Status</h3>
+                <p id="private-key-info">Your private key is encrypted and stored in this browser's local storage. It is only decrypted in memory when you log in with your PIN.</p>
+                <button id="logout-btn">Logout</button>
+            </div>
+
+            <!-- Player Panel (Lobby) -->
+            <div id="player-panel" class="card" style="display: none;">
+                <h2>Player Lobby</h2>
+                <p>You are logged in. Waiting for the host to start the game...</p>
+                <button id="player-logout-btn">Logout</button>
             </div>
         </div>
-
-        <!-- Host Control Panel -->
-        <div id="host-panel" class="card" style="display: none;">
-            <h2>Host Control Panel</h2>
-            <p>You are logged in as the host. Your private key is loaded securely in memory.</p>
-            
-            <h3>Your Public Key</h3>
-            <p>Share this public key with the game developer. It will be embedded into the game client to verify you as the host.</p>
-            <pre id="public-key-display"></pre>
-            <button id="copy-public-key-btn">Copy Public Key</button>
-
-            <h3>Private Key Status</h3>
-            <p id="private-key-info">Your private key is encrypted and stored in this browser's local storage. It is only decrypted in memory when you log in with your PIN.</p>
-            <button id="logout-btn">Logout</button>
-        </div>
-
-        <!-- Player Panel (for later use) -->
-        <div id="player-panel" class="card" style="display: none;">
-            <h2>Player Lobby</h2>
-            <p>You are logged in. Waiting for the host to start the game...</p>
-            <button id="player-logout-btn">Logout</button>
+        
+        <!-- Game World Panel -->
+        <div id="game-world-panel" style="display: none;">
+            <div id="game-info">
+                <span id="host-status"></span>
+            </div>
+            <!-- 3D Scene will be rendered here -->
         </div>
 
     </div>
