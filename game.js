@@ -69,6 +69,32 @@ const DOMElements = {
 // --- UI Logic ---
 
 /**
+ * Updates UI text based on whether a main host is configured.
+ */
+function configureUITextForEstablishedHost() {
+    // A main host is considered "established" if its public key is hardcoded in the client.
+    const hostIsEstablished = HOST_PUBLIC_KEY_JWK && HOST_PUBLIC_KEY_JWK.n;
+
+    if (hostIsEstablished) {
+        // Change text from "Host..." to more generic "User..." or "Your..." terms
+        // since any user who is not THE host is just a regular user.
+        DOMElements.authContainer.querySelector('h1').textContent = 'User Authentication';
+        DOMElements.authPanel.querySelector('h2').textContent = 'User Setup & Login';
+        
+        const pinSetupPanel = DOMElements.pinSetupPanel;
+        pinSetupPanel.querySelector('h3').textContent = '1. Generate Your Keys';
+        pinSetupPanel.querySelector('p').textContent = "If you don't have keys yet, create them here. This only needs to be done once.";
+        DOMElements.generateKeysBtn.textContent = 'Generate User Keys';
+
+        const pinLoginPanel = DOMElements.pinLoginPanel;
+        pinLoginPanel.querySelector('h3').textContent = '2. Login';
+        pinLoginPanel.querySelector('p').textContent = 'If you have already generated keys, enter your PIN to log in.';
+        DOMElements.loginBtn.textContent = 'Login as User';
+    }
+    // If no host is established, the default HTML text ("Host...") is appropriate.
+}
+
+/**
  * Displays a notification message.
  * @param {string} message - The message to display.
  * @param {'success'|'error'} type - The type of notification.
@@ -488,6 +514,9 @@ function initialize() {
     DOMElements.playerLogoutBtn.addEventListener('click', handleLogout); // Also hook up logout for player panel
     DOMElements.copyPublicKeyBtn.addEventListener('click', handleCopyPublicKey);
     DOMElements.showGenerateLink.addEventListener('click', handleShowGeneratePanel);
+    
+    // Configure UI text based on whether a host key is defined in the client
+    configureUITextForEstablishedHost();
     
     updateHostStateView();
 }
