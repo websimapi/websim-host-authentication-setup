@@ -27,6 +27,7 @@ const room = new WebsimSocket();
 let scene, camera, renderer, cube;
 let animationFrameId;
 const sceneObjects = {}; // To map game state objects to three.js objects
+let controls; // To be defined if OrbitControls are used
 
 // --- Global state ---
 let hostState = {
@@ -62,6 +63,7 @@ const DOMElements = {
     playerLogoutBtn: document.getElementById('player-logout-btn'),
     gameWorldPanel: document.getElementById('game-world-panel'),
     hostStatus: document.getElementById('host-status'),
+    playerList: document.getElementById('player-list'),
 };
 
 // --- UI Logic ---
@@ -217,6 +219,33 @@ function handleShowGeneratePanel(e) {
 }
 
 
+// --- Player Character ---
+
+function createStickCharacter() {
+    const character = new THREE.Group();
+
+    const head = new THREE.Mesh(
+        new THREE.SphereGeometry(0.25, 16, 16),
+        new THREE.MeshStandardMaterial({ color: 0xffdbac })
+    );
+    head.position.y = 1.5;
+
+    const body = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.05, 0.05, 1, 8),
+        new THREE.MeshStandardMaterial({ color: 0x333333 })
+    );
+    body.position.y = 0.75;
+    
+    character.add(head);
+    character.add(body);
+
+    // Simple placeholder for character body
+    character.position.y = 0.5; // Sit on top of the terrain plane
+
+    return character;
+}
+
+
 // --- 3D Scene Logic ---
 
 function initializeGameWorld() {
@@ -235,20 +264,27 @@ function initializeGameWorld() {
     scene.background = new THREE.Color(0x1a1a1a);
     
     camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-    camera.position.z = 5;
+    camera.position.set(0, 20, 25);
+    camera.lookAt(0, 0, 0);
 
     renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(window.innerWidth, window.innerHeight);
     DOMElements.gameWorldPanel.appendChild(renderer.domElement);
 
     // Lighting
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
     scene.add(ambientLight);
-    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
-    directionalLight.position.set(5, 10, 7.5);
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 1.0);
+    directionalLight.position.set(-10, 20, 10);
+    directionalLight.castShadow = true;
     scene.add(directionalLight);
 
-    // Initial object creation will be handled by room state subscription
+    // Terrain
+    const terrainGeometry = new THREE.PlaneGeometry(256, 256);
+    const terrainMaterial = new THREE.MeshStandardMaterial({ color: 0x228B22 }); // ForestGreen
+    const terrain = new THREE.Mesh(terrainGeometry, terrainMaterial);
+    terrain.rotation.x = -Math.PI / 2;
+    scene.add(terrain);
     
     window.addEventListener('resize', onWindowResize);
     animate();
@@ -264,6 +300,7 @@ function teardownGameWorld() {
         renderer.dispose();
     }
     
+    DOMElements.playerList.innerHTML = '';
     DOMElements.authContainer.style.display = 'block';
     DOMElements.gameWorldPanel.style.display = 'none';
     DOMElements.appContainer.classList.remove('in-game');
@@ -290,27 +327,18 @@ function animate() {
 
     // Host-specific logic
     if (hostState.isMainHost) {
-        // In a real game, host would calculate physics and update state here
-        const time = Date.now() * 0.001;
-        room.updateRoomState({
-            gameObjects: {
-                'box1': {
-                    x: Math.sin(time) * 2,
-                    y: Math.cos(time) * 2,
-                    z: 0
-                }
-            }
-        });
+        // In a real game, host would calculate physics and update state here.
+        // For now, we'll just keep players at their initial positions.
     }
 
     // All clients render based on roomState
-    if (room.roomState.gameObjects) {
-        const gameStateObjects = room.roomState.gameObjects;
-        for (const objectId in gameStateObjects) {
-            const data = gameStateObjects[objectId];
-            const obj = sceneObjects[objectId];
+    if (room.roomState.players) {
+        const gamePlayers = room.roomState.players;
+        for (const playerId in gamePlayers) {
+            const data = gamePlayers[playerId];
+            const obj = sceneObjects[playerId];
             if (obj && data) {
-                obj.position.set(data.x, data.y, data.z);
+                obj.position.set(data.x, 0, data.z);
             }
         }
     }
@@ -330,16 +358,16 @@ async function connectToRoom() {
     const initialPresence = {
         isHost: hostState.isMainHost,
         loggedIn: true,
+        x: Math.random() * 20 - 10,
+        z: Math.random() * 20 - 10,
     };
     room.updatePresence(initialPresence);
 
     // Host initializes game state
-    if (hostState.isMainHost && !room.roomState.gameObjects) {
+    if (hostState.isMainHost && !room.roomState.players) {
         console.log("I am the host. Initializing room state.");
         room.updateRoomState({
-            gameObjects: {
-                'box1': { x: 0, y: 0, z: 0 }
-            }
+            players: {}
         });
     }
 
@@ -350,14 +378,52 @@ async function connectToRoom() {
 function handlePresenceUpdate() {
     let hostFound = false;
     let hostUsername = 'N/A';
+    const playerUsernames = [];
+
+    const currentPlayers = room.roomState.players || {};
     
     for (const clientId in room.presence) {
-        if (room.presence[clientId]?.isHost) {
+        const peer = room.peers[clientId];
+        const presence = room.presence[clientId];
+
+        if (presence?.isHost) {
             hostFound = true;
-            hostUsername = room.peers[clientId]?.username || 'Host';
-            break;
+            hostUsername = peer?.username || 'Host';
+        }
+        if (peer && presence?.loggedIn) {
+             playerUsernames.push(peer.username);
+        }
+
+        // Host logic: check if player needs to be added to room state
+        if (hostState.isMainHost && presence?.loggedIn && !currentPlayers[clientId]) {
+            console.log(`Host: adding player ${clientId} to the game.`);
+            room.updateRoomState({
+                players: {
+                    [clientId]: {
+                        x: presence.x,
+                        z: presence.z,
+                    }
+                }
+            });
         }
     }
+
+    // Host logic: check for disconnected players
+    if (hostState.isMainHost) {
+        const newPlayerState = { ...currentPlayers };
+        let changed = false;
+        for(const playerId in newPlayerState) {
+            if (!room.presence[playerId] || !room.presence[playerId].loggedIn) {
+                console.log(`Host: removing player ${playerId} from the game.`);
+                newPlayerState[playerId] = null; // Mark for deletion
+                changed = true;
+            }
+        }
+        if (changed) {
+            room.updateRoomState({ players: newPlayerState });
+        }
+    }
+
 
     if (hostFound && !hostState.gameActive) {
         initializeGameWorld();
@@ -367,34 +433,47 @@ function handlePresenceUpdate() {
 
     if(hostState.gameActive) {
         DOMElements.hostStatus.textContent = `Host: ${hostUsername}`;
+        DOMElements.playerList.innerHTML = `Players: ${playerUsernames.join(', ')}`;
     }
 }
 
 function handleRoomStateUpdate(currentRoomState) {
     if (!hostState.gameActive || !scene) return;
     
-    const gameStateObjects = currentRoomState.gameObjects || {};
+    const gamePlayers = currentRoomState.players || {};
 
-    // Add new objects
-    for (const objectId in gameStateObjects) {
-        if (!sceneObjects[objectId] && gameStateObjects[objectId]) {
-            console.log(`Creating new object: ${objectId}`);
-            const geometry = new THREE.BoxGeometry(1, 1, 1);
-            const material = new THREE.MeshStandardMaterial({ color: 0x00aaff });
-            const newCube = new THREE.Mesh(geometry, material);
-            sceneObjects[objectId] = newCube;
-            scene.add(newCube);
+    // Add new players / characters
+    for (const playerId in gamePlayers) {
+        if (!sceneObjects[playerId] && gamePlayers[playerId]) {
+            console.log(`Creating new character for: ${playerId}`);
+            const character = createStickCharacter();
+            
+            // Customize color based on client ID to differentiate players
+            const color = new THREE.Color().setHSL(parseInt(playerId.substring(0, 8), 36) / 1e12, 0.8, 0.7);
+            character.traverse((child) => {
+                 if (child.isMesh && child.geometry.type === 'CylinderGeometry') {
+                    child.material.color.set(color);
+                }
+            });
+
+            sceneObjects[playerId] = character;
+            scene.add(character);
         }
     }
 
-    // Remove old objects
-     for (const objectId in sceneObjects) {
-        if (!gameStateObjects[objectId]) {
-            console.log(`Removing object: ${objectId}`);
-            scene.remove(sceneObjects[objectId]);
-            sceneObjects[objectId].geometry.dispose();
-            sceneObjects[objectId].material.dispose();
-            delete sceneObjects[objectId];
+    // Remove old players / characters
+     for (const playerId in sceneObjects) {
+        if (!gamePlayers[playerId]) {
+            console.log(`Removing character for: ${playerId}`);
+            const obj = sceneObjects[playerId];
+            scene.remove(obj);
+            obj.traverse(child => {
+                if (child.isMesh) {
+                    child.geometry.dispose();
+                    child.material.dispose();
+                }
+            });
+            delete sceneObjects[playerId];
         }
     }
 }
